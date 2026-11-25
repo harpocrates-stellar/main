@@ -323,3 +323,23 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buffer)
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+/**
+ * runOfflineVerification — entry point for the verification portal (useVerification).
+ *
+ * Adapts verifyOffline into the shape the hook expects: { ok, videoHash, message, code }.
+ * On-chain revocation checks are reported as unavailable — they are NEVER labelled passed.
+ */
+export async function runOfflineVerification(
+  file: File,
+  options?: { signal?: AbortSignal },
+): Promise<{ ok: boolean; videoHash: string; message: string; code: string | null }> {
+  const result = await verifyOffline(file, options)
+  const ok = result.outcome === 'verified-local'
+  return {
+    ok,
+    videoHash: result.fileHash,
+    message: result.message,
+    code: result.errorCode,
+  }
+}

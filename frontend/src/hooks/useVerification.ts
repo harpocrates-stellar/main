@@ -287,18 +287,19 @@ export function useVerification(): UseVerificationReturn {
       // Compare the on-chain metadata envelope (if bound) with the extracted
       // metadata hash. An absent envelope is not an error and preserves the
       // existing behaviour. A mismatch is a distinct, tamper-signalling error.
-      const proofId = onChain?.proofId ?? onChain ? onChain.prooofId : undefined
-      const envelope = proofId
+      const proofId = onChain?.proofId ?? undefined
+      const envelopeKey = proofId ?? onChain?.videoHash ?? null
+      const envelope = envelopeKey
         ? await (async () => {
             try {
-              const { getMetadataEnvelope } = await import('../lib/harpocratesRegistry')
-            return await getMetadataEnvelope(proofId)
-          } catch {
-            // Envelope read failure must not mask a confirmed result; treat as
-            // "no envelope" and let the rest of the flow report as usual.
-            return null
-          }
-        })()
+              const { getMetadataEnvelope } = await import('../services/verificationService')
+              return await getMetadataEnvelope(envelopeKey)
+            } catch {
+              // Envelope read failure must not mask a confirmed result; treat as
+              // "no envelope" and let the rest of the flow report as usual.
+              return null
+            }
+          })()
         : null
 
       if (!revisionGuardRef.current.isCurrent(seq)) return
@@ -310,11 +311,10 @@ export function useVerification(): UseVerificationReturn {
       }
 
       if (envelope) {
-        const extractedHash = normaliseHashForCompare(extractResult.metadataHash)
+        const chainHash = normaliseHashForCompare(onChain?.metadataHash)
         const envelopeHash = normaliseHashForCompare(envelope.metadataHash)
-        // Only flag a mismatch when we have both sides; a missing extracted
-        // hash falls through to the existing metadata-only messaging.
-        if (extractedHash && envelopeHash && extractedHash !== envelopeHash) {
+        // Flag a mismatch when the on-chain record contradicts the bound envelope.
+        if (chainHash && envelopeHash && chainHash !== envelopeHash) {
           setStatus('error')
           setErrorCode('METADATA_ENVELOPE_MISMATCH')
           setVerifyResult(SAFE_MESSAGES.METADATA_ENVELOPE_MISMATCH)
@@ -379,16 +379,13 @@ export function useVerification(): UseVerificationReturn {
         return
       }
       setStatus('error')
-      setErrorCode('VERIFICATION_FAILED')
-      setVerifyResult(SAFE_MESSAGES.VERIFICATION_FAILED)
+      setErrorCode('DEPENDENCY_UNAVAILABLE')
+      setVerifyResult(SAFE_MESSAGES.DEPENDENCY_UNAVAILABLE)
     }
   }, [])
 
   const verifyEvidence = useCallback(async (file: File | null, walletAddress?: string) => {
     if (!file) {
-      setStatus('error')
-      setErrorCode('EMPTY_INPUT')
-      setVerifyResult(SAFE_MESSAGES.EMPTY_INPUT)
       return
     }
     // Offline mode is a separate code path that never touches the network.

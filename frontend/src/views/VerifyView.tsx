@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, Copy, Download, Eye, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
+import { ArrowLeftRight, CheckCircle2, Copy, Download, Eye, FileText, Loader2, RefreshCw, Upload, WifiOff, XCircle } from 'lucide-react'
 import type { UseVerificationReturn } from '../hooks/useVerification'
 import { useIssuerTrust } from '../hooks/useIssuerTrust'
-import { explainVerificationTrust } from '../services/verificationFlow'
 import { ChainProofPanel } from '../components/ChainProofPanel'
 import { DisputePanel } from '../components/DisputePanel'
 import { EventList } from '../components/EventList'
@@ -11,7 +10,6 @@ import { ShareVerificationLink } from '../components/ShareVerificationLink'
 import { VerifierSetStatusPanel } from '../components/VerifierSetStatusPanel'
 import VerificationTimeline from '../components/VerificationTimeline'
 import { VerificationResultTabs } from '../components/VerificationResultTabs'
-import { resolveVerifiedStatementIdentity } from '../services/verificationFlow'
 import { shortHash } from '../utils'
 import ProvenanceCard from '../provenance/ProvenanceCard'
 import type { ProvenanceRecord } from '../provenance/provenanceModel'
@@ -20,7 +18,12 @@ import type { VerificationShareLinkInput } from '../verificationShareLink'
 import { tryParseManifest } from '../batchVerifier'
 import {
   buildVerificationExportPreview,
+  createVerificationRevisionGuard,
+  explainVerificationTrust,
+  resolveVerifiedStatementIdentity,
   serializeVerificationExportPreview,
+  type TrustDimensionState,
+  type TrustModel,
   type VerificationExportPreview,
 } from '../services/verificationFlow'
 
@@ -254,6 +257,76 @@ export function VerifyView({ wallet, networkMismatch, verification, provenanceRe
       tier,
     }
   }, [status, statementIdentity, videoHashInput, verifyHash, events, proofIdInput, chainProof, provenanceRecord])
+
+  const issuerTrust = useIssuerTrust({
+    issuer: chainProof?.issuer ?? null,
+    expiresAt: chainProof?.expiresAt ?? null,
+  })
+
+  const [showComparison, setShowComparison] = useState(false)
+  const [prevStatementDigest, setPrevStatementDigest] = useState<string | null>(null)
+  const currentDigest = statementIdentity.statementDigest ?? null
+  if (currentDigest !== prevStatementDigest) {
+    setPrevStatementDigest(currentDigest)
+    if (showComparison && currentDigest !== prevStatementDigest && prevStatementDigest !== null) {
+      setShowComparison(false)
+    }
+  }
+
+  const initialComparison: { left: string | null; right: string | null } | null = null
+
+  // isStaleSuccess: a previous success result is showing while a new verification is running.
+  const isStaleSuccess = status !== 'success' && status !== 'idle' && !!verifyHash && !!verifyResult && !isVerifying
+  const staleResultMessage: string | null = null
+
+  const trustExplanation = useMemo(
+    () =>
+      explainVerificationTrust({
+        status,
+        offline,
+        errorCode,
+        chainProof,
+        events,
+      }),
+    [status, offline, errorCode, chainProof, events],
+  )
+
+  const showTrustDimensions = !offline && (status === 'success' || status === 'error') && !manifestError
+  const trustModel: TrustModel = useMemo(() => {
+    const overall = trustExplanation.overall
+    const hasFailure = overall === 'failed'
+    const revocationState: TrustDimensionState =
+      offline ? 'not_applicable' : chainProof?.status === 2 ? 'failed' : chainProof?.status === 3 ? 'failed' : chainProof ? 'verified' : 'unverified'
+    const corroborationState: TrustDimensionState =
+      offline ? 'not_applicable' : events.length > 0 ? 'verified' : 'unverified'
+    const envelopeState: TrustDimensionState =
+      errorCode === 'METADATA_ENVELOPE_MISMATCH' ? 'failed' : errorCode === 'INVALID_EVIDENCE' ? 'failed' : status === 'success' ? 'verified' : 'unverified'
+    return {
+      overall,
+      hasFailure,
+      dimensions: {
+        envelope: {
+          key: 'envelope',
+          label: 'Embedded envelope',
+          summary: offline ? 'Validated locally.' : envelopeState === 'verified' ? 'Valid Harpocrates metadata found.' : envelopeState === 'failed' ? 'Envelope invalid or mismatched.' : 'Not verified.',
+          state: envelopeState,
+        },
+        revocation: {
+          key: 'revocation',
+          label: 'Revocation status',
+          // Never label a skipped online revocation check as passed.
+          summary: offline ? 'Not checked (offline mode). No trust decision made.' : revocationState === 'verified' ? 'Active on-chain record.' : revocationState === 'failed' ? 'Revoked or expired.' : 'Not loaded.',
+          state: revocationState,
+        },
+        corroboration: {
+          key: 'corroboration',
+          label: 'Backend corroboration',
+          summary: offline ? 'Not queried (offline mode).' : corroborationState === 'verified' ? `${events.length} corroborating event${events.length === 1 ? '' : 's'}.` : 'No backend events found.',
+          state: corroborationState,
+        },
+      },
+    }
+  }, [offline, status, errorCode, chainProof, events, trustExplanation])
 
   return (
     <section className="workspace app-page verify-page" id="verify">
